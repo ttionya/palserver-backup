@@ -3,38 +3,51 @@ import { cpSync, existsSync } from 'node:fs'
 import { CronJob } from 'cron'
 import psList from 'ps-list'
 import dayjs from 'dayjs'
+import axios from 'axios'
 import chalk from 'chalk'
 import config from './config.js'
 
-async function isRunning() {
+async function checkProcessRunning() {
   const processes = await psList()
 
   return processes.some((process) => process.name === config.BIN_NAME)
 }
 
-function generateBackupSuffix() {
-  return dayjs().format('YYYYMMDDHHmm')
+function checkSourcePathExist() {
+  const source = path.resolve(config.SOURCE_PATH)
+
+  // throw error if source path does not exist
+  if (!existsSync(source)) throw new Error(`Source path "${source}" does not exist`)
+}
+
+function getBackupTime() {
+  return dayjs().format('YYYYMMDDHHmmss')
 }
 
 function handleBackup() {
-  const src = path.resolve(config.INSTALL_PATH)
-  const dest = path.resolve(config.INSTALL_PATH, generateBackupSuffix())
+  const source = path.resolve(config.SOURCE_PATH)
+  const sourceBasename = path.basename(source)
+  const target = path.resolve(config.TARGET_PATH, `${sourceBasename}-${getBackupTime()}`)
 
-  // throw error if source path does not exist
-  if (!existsSync(src)) throw new Error(`Source path "${src}" does not exist`)
+  cpSync(source, target, { recursive: true })
 
-  cpSync(src, dest, { recursive: true })
-
-  console.log(chalk.green(`Backup ${src} to ${dest}`))
+  console.log(chalk.green(`Backup "${source}" to "${target}"`))
 }
 
 function handlePingHealthCheck(isRunning) {
   if (!config.HEALTHCHECK_URL) return
 
-  // ping healthcheck url
+  const url = isRunning ? `${config.HEALTHCHECK_URL}/0` : `${config.HEALTHCHECK_URL}/1`
+
+  axios
+    .get(url)
+    .then(() => console.log(chalk.green('Ping healthcheck success')))
+    .catch(() => console.log(chalk.red('Ping healthcheck failed')))
 }
 
 function start() {
+  checkSourcePathExist()
+
   const backupCronJob = CronJob.from({
     cronTime: config.BACKUP_CRON,
     onTick: handleBackup,
@@ -47,7 +60,7 @@ function start() {
     cronTime: config.HEALTHCHECK_CRON,
     timeZone: config.TIMEZONE,
     onTick: async () => {
-      if (await isRunning()) {
+      if (await checkProcessRunning()) {
         console.log(chalk.blue('Server is running'))
 
         backupCronJob.start()
